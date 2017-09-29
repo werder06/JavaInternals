@@ -34,168 +34,171 @@ import java.util.concurrent.TimeUnit;
 @State(Scope.Benchmark)
 public class DocValuesBench54 {
 
-    private static final String INDEX_PATH = "/Users/akudryavtsev/Downloads/indexes/products/restore.20170817052816863";
-    private LeafReaderContext leafReaderContext;
-    private DirectoryReader reader;
+  private static final String INDEX_PATH = "/Users/akudryavtsev/Downloads/indexes/products/restore.20170817052816863";
 
-    @Param({"873", "374", "99", "44"})
-    private int store;
+  private DirectoryReader reader;
 
-    private FixedBitSet bitSet;
-    private IndexSearcher searcher;
-    private int maxDoc;
-    private Random random;
+  @Param({"873", "374", "99", "44"})
+  private int store;
 
-    @Setup
-    public void init() throws IOException {
-        random = new Random(0xDEAD_BEEF);
-        FSDirectory directory = FSDirectory.open(new File(INDEX_PATH).toPath());
-        reader = DirectoryReader.open(directory);
-        List<LeafReaderContext> leaves = reader.leaves();
-        leafReaderContext = leaves.get(0);
-        maxDoc = reader.numDocs();
-        searcher = new IndexSearcher(reader);
+  private FixedBitSet bitSet;
+  private IndexSearcher searcher;
+  private int maxDoc;
+  private Random random;
 
-        //this bitset is used as baseline for all measurements
-        bitSet = new FixedBitSet(maxDoc);
-        Query query = DocValuesRangeQuery.newLongRange(getStore(), 1L, 1L, true, true);
-        query = query.rewrite(reader);
-        Weight weight = query.createWeight(searcher, false);
-        Scorer scorer = weight.scorer(leafReaderContext);
-        DocIdSetIterator docs = scorer.iterator();
-        int doc;
-        while ((doc = docs.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
-            bitSet.set(doc);
-        }
+  @Setup
+  public void init() throws IOException {
+    random = new Random(0xDEAD_BEEF);
+    FSDirectory directory = FSDirectory.open(new File(INDEX_PATH).toPath());
+    reader = DirectoryReader.open(directory);
+    List<LeafReaderContext> leaves = reader.leaves();
+    LeafReaderContext leafReaderContext = leaves.get(0);
+    maxDoc = reader.numDocs();
+    searcher = new IndexSearcher(reader);
+
+    //this bitset is used as baseline for all measurements
+    bitSet = new FixedBitSet(maxDoc);
+    Query query = DocValuesRangeQuery.newLongRange(getStore(), 1L, 1L, true, true);
+    query = query.rewrite(reader);
+    Weight weight = query.createWeight(searcher, false);
+    Scorer scorer = weight.scorer(leafReaderContext);
+    DocIdSetIterator docs = scorer.iterator();
+    int doc;
+    while ((doc = docs.nextDoc()) != DocIdSetIterator.NO_MORE_DOCS) {
+      bitSet.set(doc);
     }
+  }
 
-    private String getStore() {
-        return "store_" + store;
+  private String getStore() {
+    return "store_" + store;
+  }
+
+  @Benchmark
+  @OutputTimeUnit(TimeUnit.MILLISECONDS)
+  public int iterateAllRangeQuery() throws IOException {
+    int result = 0;
+    Query query = DocValuesRangeQuery.newLongRange(getStore(), 1L, 1L, true, true);
+    query = query.rewrite(reader);
+    Weight weight = query.createWeight(searcher, false);
+    for (LeafReaderContext context : reader.getContext().leaves()) {
+      Scorer scorer = weight.scorer(context);
+      DocIdSetIterator docs = scorer.iterator();
+      while (docs.nextDoc() != DocIdSetIterator.NO_MORE_DOCS) {
+        result++;
+      }
     }
+    return result;
+  }
 
-    @Benchmark
-    @OutputTimeUnit(TimeUnit.MILLISECONDS)
-    public int iterateAllRangeQuery() throws IOException {
-        int result;
-        Query query = DocValuesRangeQuery.newLongRange(getStore(), 1L, 1L, true, true);
-        query = query.rewrite(reader);
-        Weight weight = query.createWeight(searcher, false);
-        Scorer scorer = weight.scorer(leafReaderContext);
-        DocIdSetIterator docs = scorer.iterator();
-        result = 0;
-        while (docs.nextDoc() != DocIdSetIterator.NO_MORE_DOCS) {
-            result++;
-        }
-        return result;
+
+  @Benchmark
+  @OutputTimeUnit(TimeUnit.MILLISECONDS)
+  public int iterateAllDocValuesFull() throws IOException {
+    int result = 0;
+    NumericDocValues numericDocValues = MultiDocValues.getNumericValues(reader, getStore());
+    FixedBitSet bitSet = new FixedBitSet(maxDoc);
+    for (int j = 0; j < maxDoc; j++) {
+      long value = numericDocValues.get(j);
+      if (value == 1) {
+        bitSet.set(j);
+      }
     }
-
-
-    @Benchmark
-    @OutputTimeUnit(TimeUnit.MILLISECONDS)
-    public int iterateAllDocValuesFull() throws IOException {
-        int result = 0;
-        NumericDocValues numericDocValues = MultiDocValues.getNumericValues(reader, getStore());
-        FixedBitSet bitSet = new FixedBitSet(maxDoc);
-        for (int j = 0; j < maxDoc; j++) {
-            long value = numericDocValues.get(j);
-            if(value == 1) {
-                bitSet.set(j);
-            }
-        }
-        BitDocSet bitDocSet = new BitDocSet(bitSet);
-        Query query = bitDocSet.getTopFilter();
-        query = query.rewrite(reader);
-        Weight weight = query.createWeight(searcher, false);
-        Scorer scorer = weight.scorer(leafReaderContext);
-        DocIdSetIterator docs = scorer.iterator();
-        while (docs.nextDoc() != DocIdSetIterator.NO_MORE_DOCS) {
-            result++;
-        }
-        return result;
+    BitDocSet bitDocSet = new BitDocSet(bitSet);
+    Query query = bitDocSet.getTopFilter();
+    query = query.rewrite(reader);
+    Weight weight = query.createWeight(searcher, false);
+    for (LeafReaderContext context : reader.getContext().leaves()) {
+      Scorer scorer = weight.scorer(context);
+      DocIdSetIterator docs = scorer.iterator();
+      while (docs.nextDoc() != DocIdSetIterator.NO_MORE_DOCS) {
+        result++;
+      }
     }
+    return result;
+  }
 
 
-    @Benchmark
-    @OutputTimeUnit(TimeUnit.MILLISECONDS)
-    public int customDocValuesQuery() throws IOException {
-        int result;
-        Query query = new DocValuesNumberQuery(getStore(), 1);
-        query = query.rewrite(reader);
-        Weight weight = query.createWeight(searcher, false);
-        Scorer scorer = weight.scorer(leafReaderContext);
-        DocIdSetIterator docs = scorer.iterator();
-        result = 0;
-        while (docs.nextDoc() != DocIdSetIterator.NO_MORE_DOCS) {
-            result++;
-        }
-        return result;
+  @Benchmark
+  @OutputTimeUnit(TimeUnit.MILLISECONDS)
+  public int customDocValuesQuery() throws IOException {
+    int result = 0;
+    Query query = new DocValuesNumberQuery(getStore(), 1);
+    query = query.rewrite(reader);
+    Weight weight = query.createWeight(searcher, false);
+    for (LeafReaderContext context : reader.getContext().leaves()) {
+      Scorer scorer = weight.scorer(context);
+      DocIdSetIterator docs = scorer.iterator();
+      while (docs.nextDoc() != DocIdSetIterator.NO_MORE_DOCS) {
+        result++;
+      }
     }
+    return result;
+  }
 
 
+  public static void main(String[] args) throws Exception {
 
-    public static void main(String[] args) throws Exception {
-
-        Options options = new OptionsBuilder()
-            .include(DocValuesBench54.class.getName())
+    Options options = new OptionsBuilder()
+        .include(DocValuesBench54.class.getName())
 //                .addProfiler(LinuxPerfAsmProfiler.class)
 //                .addProfiler(StackProfiler.class)
 //                .addProfiler(LinuxPerfProfiler.class)
 //                .addProfiler(GCProfiler.class)
-            .verbosity(VerboseMode.NORMAL)
-            .build();
-        new Runner(options).run();
+        .verbosity(VerboseMode.NORMAL)
+        .build();
+    new Runner(options).run();
+  }
+
+  private class DocValuesNumberQuery extends Query {
+
+    private final String field;
+    private final long number;
+
+    public DocValuesNumberQuery(String field, long number) {
+      this.field = Objects.requireNonNull(field);
+      this.number = number;
     }
 
-    private class DocValuesNumberQuery extends Query {
+    @Override
+    public boolean equals(Object obj) {
+      if (!super.equals(obj)) {
+        return false;
+      }
+      DocValuesNumberQuery that = (DocValuesNumberQuery) obj;
+      return field.equals(that.field) && number == that.number;
+    }
 
-        private final String field;
-        private final long number;
+    @Override
+    public int hashCode() {
+      return 31 * super.hashCode() + Objects.hash(field, number);
+    }
 
-        public DocValuesNumberQuery(String field, long number) {
-            this.field = Objects.requireNonNull(field);
-            this.number = number;
-        }
+    @Override
+    public String toString(String defaultField) {
+      return field + ":" + number;
+    }
+
+    @Override
+    public Weight createWeight(IndexSearcher searcher, boolean needsScores) throws IOException {
+      return new RandomAccessWeight(this) {
 
         @Override
-        public boolean equals(Object obj) {
-            if (!super.equals(obj)) {
-                return false;
+        protected Bits getMatchingDocs(final LeafReaderContext context) throws IOException {
+          final NumericDocValues values = DocValues.getNumeric(context.reader(), field);
+          return new Bits() {
+
+            @Override
+            public boolean get(int doc) {
+              return values.get(doc) == number;
             }
-            DocValuesNumberQuery that = (DocValuesNumberQuery) obj;
-            return field.equals(that.field) && number == that.number;
+
+            @Override
+            public int length() {
+              return context.reader().maxDoc();
+            }
+          };
         }
-
-        @Override
-        public int hashCode() {
-            return 31 * super.hashCode() + Objects.hash(field, number);
-        }
-
-        @Override
-        public String toString(String defaultField) {
-            return field + ":" + number;
-        }
-
-        @Override
-        public Weight createWeight(IndexSearcher searcher, boolean needsScores) throws IOException {
-            return new RandomAccessWeight(this) {
-
-                @Override
-                protected Bits getMatchingDocs(final LeafReaderContext context) throws IOException {
-                    final NumericDocValues values = DocValues.getNumeric(context.reader(), field);
-                    return new Bits() {
-
-                        @Override
-                        public boolean get(int doc) {
-                            return values.get(doc) == number;
-                        }
-
-                        @Override
-                        public int length() {
-                            return context.reader().maxDoc();
-                        }
-                    };
-                }
-            };
-        }
+      };
     }
+  }
 }
