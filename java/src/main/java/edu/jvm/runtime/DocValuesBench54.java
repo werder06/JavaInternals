@@ -3,7 +3,9 @@ package edu.jvm.runtime;
 import org.apache.lucene.index.*;
 import org.apache.lucene.search.*;
 import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.FixedBitSet;
+import org.apache.solr.search.BitDocSet;
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.runner.Runner;
 import org.openjdk.jmh.runner.options.Options;
@@ -13,6 +15,7 @@ import org.openjdk.jmh.runner.options.VerboseMode;
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
+import java.util.Objects;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
@@ -31,28 +34,27 @@ import java.util.concurrent.TimeUnit;
 @State(Scope.Benchmark)
 public class DocValuesBench54 {
 
-    private static final String INDEX_PATH = "/home/imamontov/Downloads/products/restore.20170817052816863";
+    private static final String INDEX_PATH = "/Users/akudryavtsev/Downloads/indexes/products/restore.20170817052816863";
     private LeafReaderContext leafReaderContext;
     private DirectoryReader reader;
 
-    @Param({"65", "99", "44", "45"})
+    @Param({"873", "374", "99", "44"})
     private int store;
 
     private FixedBitSet bitSet;
     private IndexSearcher searcher;
     private int maxDoc;
     private Random random;
-    ;
 
     @Setup
     public void init() throws IOException {
         random = new Random(0xDEAD_BEEF);
         FSDirectory directory = FSDirectory.open(new File(INDEX_PATH).toPath());
         reader = DirectoryReader.open(directory);
-        searcher = new IndexSearcher(reader);
         List<LeafReaderContext> leaves = reader.leaves();
         leafReaderContext = leaves.get(0);
         maxDoc = reader.numDocs();
+        searcher = new IndexSearcher(reader);
 
         //this bitset is used as baseline for all measurements
         bitSet = new FixedBitSet(maxDoc);
@@ -72,29 +74,6 @@ public class DocValuesBench54 {
     }
 
     @Benchmark
-    @OutputTimeUnit(TimeUnit.NANOSECONDS)
-    public boolean randomGetBitSet() throws IOException {
-        return bitSet.get(random.nextInt(maxDoc - 1));
-    }
-
-    @Benchmark
-    @OutputTimeUnit(TimeUnit.NANOSECONDS)
-    public long randomGetDocValues() throws IOException {
-        NumericDocValues numericDocValues = DocValues.getNumeric(leafReaderContext.reader(), getStore());
-        return numericDocValues.get(random.nextInt(maxDoc - 1));
-    }
-
-    @Benchmark
-    @OutputTimeUnit(TimeUnit.MILLISECONDS)
-    public int iterateAllBitSet() throws IOException {
-        int result = 0;
-        for (int ord = bitSet.nextSetBit(0); ord != DocIdSetIterator.NO_MORE_DOCS; ord = ord + 1 >= bitSet.length() ? DocIdSetIterator.NO_MORE_DOCS : bitSet.nextSetBit(ord + 1)) {
-            result++;
-        }
-        return result;
-    }
-
-    @Benchmark
     @OutputTimeUnit(TimeUnit.MILLISECONDS)
     public int iterateAllRangeQuery() throws IOException {
         int result;
@@ -110,28 +89,113 @@ public class DocValuesBench54 {
         return result;
     }
 
+
     @Benchmark
     @OutputTimeUnit(TimeUnit.MILLISECONDS)
-    public int iterateAllDocValues() throws IOException {
+    public int iterateAllDocValuesFull() throws IOException {
         int result = 0;
-        NumericDocValues numericDocValues = DocValues.getNumeric(leafReaderContext.reader(), getStore());
+        NumericDocValues numericDocValues = MultiDocValues.getNumericValues(reader, getStore());
+        FixedBitSet bitSet = new FixedBitSet(maxDoc);
         for (int j = 0; j < maxDoc; j++) {
             long value = numericDocValues.get(j);
-            result += value;
+            if(value == 1) {
+                bitSet.set(j);
+            }
+        }
+        BitDocSet bitDocSet = new BitDocSet(bitSet);
+        Query query = bitDocSet.getTopFilter();
+        query = query.rewrite(reader);
+        Weight weight = query.createWeight(searcher, false);
+        Scorer scorer = weight.scorer(leafReaderContext);
+        DocIdSetIterator docs = scorer.iterator();
+        while (docs.nextDoc() != DocIdSetIterator.NO_MORE_DOCS) {
+            result++;
         }
         return result;
     }
 
+
+    @Benchmark
+    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+    public int customDocValuesQuery() throws IOException {
+        int result;
+        Query query = new DocValuesNumberQuery(getStore(), 1);
+        query = query.rewrite(reader);
+        Weight weight = query.createWeight(searcher, false);
+        Scorer scorer = weight.scorer(leafReaderContext);
+        DocIdSetIterator docs = scorer.iterator();
+        result = 0;
+        while (docs.nextDoc() != DocIdSetIterator.NO_MORE_DOCS) {
+            result++;
+        }
+        return result;
+    }
+
+
+
     public static void main(String[] args) throws Exception {
 
         Options options = new OptionsBuilder()
-                .include(DocValuesBench54.class.getName())
+            .include(DocValuesBench54.class.getName())
 //                .addProfiler(LinuxPerfAsmProfiler.class)
 //                .addProfiler(StackProfiler.class)
 //                .addProfiler(LinuxPerfProfiler.class)
 //                .addProfiler(GCProfiler.class)
-                .verbosity(VerboseMode.NORMAL)
-                .build();
+            .verbosity(VerboseMode.NORMAL)
+            .build();
         new Runner(options).run();
+    }
+
+    private class DocValuesNumberQuery extends Query {
+
+        private final String field;
+        private final long number;
+
+        public DocValuesNumberQuery(String field, long number) {
+            this.field = Objects.requireNonNull(field);
+            this.number = number;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (!super.equals(obj)) {
+                return false;
+            }
+            DocValuesNumberQuery that = (DocValuesNumberQuery) obj;
+            return field.equals(that.field) && number == that.number;
+        }
+
+        @Override
+        public int hashCode() {
+            return 31 * super.hashCode() + Objects.hash(field, number);
+        }
+
+        @Override
+        public String toString(String defaultField) {
+            return field + ":" + number;
+        }
+
+        @Override
+        public Weight createWeight(IndexSearcher searcher, boolean needsScores) throws IOException {
+            return new RandomAccessWeight(this) {
+
+                @Override
+                protected Bits getMatchingDocs(final LeafReaderContext context) throws IOException {
+                    final NumericDocValues values = DocValues.getNumeric(context.reader(), field);
+                    return new Bits() {
+
+                        @Override
+                        public boolean get(int doc) {
+                            return values.get(doc) == number;
+                        }
+
+                        @Override
+                        public int length() {
+                            return context.reader().maxDoc();
+                        }
+                    };
+                }
+            };
+        }
     }
 }
