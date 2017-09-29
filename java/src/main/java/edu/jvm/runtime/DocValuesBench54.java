@@ -38,7 +38,7 @@ public class DocValuesBench54 {
 
   private DirectoryReader reader;
 
-  @Param({"873", "374", "99", "44"})
+  @Param({"873", "374", "44", "45"})
   private int store;
 
   private FixedBitSet bitSet;
@@ -96,6 +96,9 @@ public class DocValuesBench54 {
   public int iterateAllDocValuesFull() throws IOException {
     int result = 0;
     NumericDocValues numericDocValues = MultiDocValues.getNumericValues(reader, getStore());
+    if(numericDocValues == null) {
+      return 0;
+    }
     FixedBitSet bitSet = new FixedBitSet(maxDoc);
     for (int j = 0; j < maxDoc; j++) {
       long value = numericDocValues.get(j);
