@@ -120,6 +120,35 @@ public class DocValuesBench54 {
     return result;
   }
 
+  @Benchmark
+  @OutputTimeUnit(TimeUnit.MILLISECONDS)
+  public int iterateAllDocValuesWithoutQuery() throws IOException {
+    int result = 0;
+    String store = getStore();
+    for (LeafReaderContext context : reader.getContext().leaves()) {
+      NumericDocValues numericDocValues = DocValues.getNumeric(context.reader(), store);
+      FixedBitSet bitSet = new FixedBitSet(context.reader().maxDoc());
+      for (int j = 0; j < context.reader().maxDoc(); j++) {
+        long value = numericDocValues.get(j);
+        if (value == 1) {
+          bitSet.set(j);
+        }
+      }
+      if(bitSet.cardinality() == 0) {
+        continue;
+      }
+      BitDocSet bitDocSet = new BitDocSet(bitSet);
+      Query query = bitDocSet.getTopFilter();
+      Weight weight = query.createWeight(searcher, false);
+      Scorer scorer = weight.scorer(context);
+      DocIdSetIterator docs = scorer.iterator();
+      while (docs.nextDoc() != DocIdSetIterator.NO_MORE_DOCS) {
+        result++;
+      }
+    }
+    return result;
+  }
+
 
   @Benchmark
   @OutputTimeUnit(TimeUnit.MILLISECONDS)
